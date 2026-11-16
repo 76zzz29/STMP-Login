@@ -16,14 +16,21 @@ import api from './src/api-calls.js';
 import converter from './src/purify.js';
 import stream, { responseLifecycleEmitter } from './src/stream.js';
 import { logger } from './src/log.js';
+import { createAuth } from './src/auth.js';
+import authStore from './src/auth-store.js';
 //import $ from 'jquery';
 
 const writeFileAsync = promisify(fs.writeFile);
 const existsAsync = promisify(fs.exists);
 
+// Login for the Guest server (accounts are managed with manage-users.js).
+// The Host server on port 8181 is not covered: it is meant for the machine running STMP.
+const auth = createAuth({ store: authStore, logger });
+
 const localApp = express();
 const remoteApp = express();
 localApp.use(express.static('public'));
+remoteApp.use(auth.middleware); // must stay before express.static, which would otherwise serve everything
 remoteApp.use(express.static('public'));
 
 let selectedAPI = 'Default'
@@ -462,7 +469,7 @@ const wssPort = 8182; //WSS for guests
 
 // Create a WebSocket server
 const wsServer = new WebSocket.Server({ server: localServer });
-const wssServer = new WebSocket.Server({ server: guestServer });
+const wssServer = new WebSocket.Server({ server: guestServer, verifyClient: auth.verifyWebSocket });
 wsServer.setMaxListeners(0);
 wssServer.setMaxListeners(0);
 
@@ -631,9 +638,25 @@ async function initFiles() {
         logger.info('===========================');
     });
 
-    guestServer.listen(wssPort, '0.0.0.0', () => {
+    guestServer.listen(wssPort, '0.0.0.0', async () => {
         logger.info(`Guest Server: ${color.yellow(`http://localhost:${wssPort}/`)}`);
         logger.info(`Run ${color.yellow('Remote-Link.cmd')} to make a Cloudflare tunnel for remote Guests.`);
+        if (auth.config.requireLogin) {
+            auth.startMaintenance();
+            try {
+                const accountCount = await authStore.countAccounts();
+                if (accountCount === 0) {
+                    logger.warn(color.yellow('Guest login is ON but there are no accounts yet, so nobody can join as a Guest.'));
+                    logger.warn(color.yellow('Create one with: node manage-users.js add <username>'));
+                } else {
+                    logger.info(`Guest login is ON (${accountCount} active account${accountCount === 1 ? '' : 's'}). Manage them with: node manage-users.js`);
+                }
+            } catch (err) {
+                logger.error('Could not read the accounts database:', err);
+            }
+        } else {
+            logger.warn(color.yellow('Guest login is OFF (STMP_REQUIRE_LOGIN=false): anyone who can reach the Guest port can join.'));
+        }
         logger.info('===========================');
     });
 
@@ -868,7 +891,16 @@ const MAX_CONNECTIONS_PER_IP = 5; // Adjust this limit as needed
 //MARK: handleConnections()
 async function handleConnections(ws, type, request) {
 
-    const clientIP = request.headers['x-forwarded-for']?.split(',')[0]?.trim() || request.socket.remoteAddress;
+    // Guests must be logged in (checked in auth.verifyWebSocket; this is a second line of defence).
+    const account = type === 'guest' && auth.config.requireLogin ? request.stmpAccount : null;
+    if (type === 'guest' && auth.config.requireLogin && !account) {
+        logger.warn('Guest connection without a logged-in account. Connection rejected.');
+        ws.close(1008, 'Login required');
+        return;
+    }
+
+    // X-Forwarded-For is only trusted when the connection comes from a trusted reverse proxy (see src/auth.js)
+    const clientIP = auth.getClientIP(request);
     logger.info(`Connection attempt from IP: ${clientIP}`);
 
     // Check IP connection limit
@@ -885,11 +917,14 @@ async function handleConnections(ws, type, request) {
 
     const urlParams = new URLSearchParams(request.url.split('?')[1]);
     const encodedUsername = urlParams.get('username');
-    const decodedUsername = decodeURIComponent(encodedUsername || '').trim();
+    // A logged-in guest's identity comes from their account, never from what the browser says.
+    const decodedUsername = account
+        ? (decodeURIComponent(encodedUsername || '').trim() || account.username)
+        : decodeURIComponent(encodedUsername || '').trim();
 
 
     //USE THESE WHEN REFERRING TO THE USER
-    let uuid = urlParams.get('uuid');
+    let uuid = account ? account.user_id : urlParams.get('uuid');
     let thisUserColor, thisUserUsername, thisUserRole;
     //USE THESE WHEN REFERRING TO THE USER
 
@@ -1037,7 +1072,12 @@ async function handleConnections(ws, type, request) {
         try {
             parsedMessage = JSON.parse(message);
 
-            let shouldReport = !unloggedMessageTypes.includes(parsedMessage.type);
+            // A logged-in guest can only speak as themselves: ignore any UUID the browser put in the message.
+            if (account && parsedMessage && typeof parsedMessage === 'object') {
+                parsedMessage.UUID = uuid;
+            }
+
+            let shouldReport =!unloggedMessageTypes.includes(parsedMessage.type);
             if (shouldReport) {
                 logger.info(`Received ${parsedMessage.type} message from ${thisUserUsername}`);
                 logger.debug(parsedMessage);
