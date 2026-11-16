@@ -716,6 +716,15 @@ function addMessageEditListeners(newDiv) {
 }
 
 
+// On the Guest server, a closed connection may mean the login expired: go back to the login page.
+// (The Host server has no /auth/me, so it answers 404 and nothing happens.)
+async function redirectToLoginIfSessionExpired() {
+  try {
+    const response = await fetch("/auth/me", { credentials: "same-origin", cache: "no-store" });
+    if (response.status === 401) location.replace("/login.html");
+  } catch (_) { /* server unreachable, nothing to do */ }
+}
+
 //MARK: connectWebSocket
 async function connectWebSocket(username) {
   var username, AIChatUsername;
@@ -729,6 +738,7 @@ async function connectWebSocket(username) {
 
   socket.onopen = function () { handleSocketOpening(socket); }
   socket.onclose = disconnectWebSocket;
+  socket.addEventListener("close", redirectToLoginIfSessionExpired);
   // Handle incoming messages from the server
   socket.addEventListener("message", async function (event) {
     var message = event.data;

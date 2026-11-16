@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#232428">
+    <title>SillyTavern Multiplayer - Login</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #232428;
+            color: #dbdee1;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+        main {
+            width: min(92vw, 360px);
+            padding: 28px 24px;
+            background: #2b2d31;
+            border-radius: 8px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, .4);
+        }
+        h1 { margin: 0 0 20px; font-size: 1.25rem; text-align: center; }
+        label { display: block; margin: 14px 0 6px; font-size: .85rem; color: #b5bac1; }
+        input {
+            width: 100%;
+            padding: 10px 12px;
+            font-size: 1rem;
+            color: inherit;
+            background: #1e1f22;
+            border: 1px solid #3f4147;
+            border-radius: 4px;
+        }
+        input:focus { outline: 2px solid #5865f2; border-color: transparent; }
+        button {
+            width: 100%;
+            margin-top: 20px;
+            padding: 11px;
+            font-size: 1rem;
+            color: #fff;
+            background: #5865f2;
+            border: 0;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:disabled { opacity: .6; cursor: wait; }
+        #message { min-height: 1.3em; margin: 14px 0 0; font-size: .9rem; text-align: center; }
+        #message.error { color: #f28b8b; }
+        #message.info { color: #8bd3a0; }
+    </style>
+</head>
+
+<body>
+    <main>
+        <h1>SillyTavern Multiplayer</h1>
+        <form id="loginForm">
+            <label for="username">Username</label>
+            <input id="username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required autofocus>
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+            <button id="submit" type="submit">Log in</button>
+            <p id="message" role="status" aria-live="polite"></p>
+        </form>
+    </main>
+
+    <script>
+        const form = document.getElementById('loginForm');
+        const message = document.getElementById('message');
+        const submit = document.getElementById('submit');
+
+        function show(text, kind) {
+            message.textContent = text;
+            message.className = kind || '';
+        }
+
+        // /login.html?logout ends the session, then shows the form again.
+        if (new URLSearchParams(location.search).has('logout')) {
+            fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' })
+                .then(() => show('You have been logged out.', 'info'))
+                .catch(() => show('Could not log out. Close this browser window to be safe.', 'error'));
+        }
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            submit.disabled = true;
+            show('');
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('username').value,
+                        password: document.getElementById('password').value,
+                    }),
+                });
+                const data = await response.json().catch(() => ({}));
+
+                if (response.ok && data.ok) {
+                    try {
+                        // The chat client identifies you by the UUID in localStorage; tie it to this account.
+                        // If a different account used this browser before, drop its saved names.
+                        if (localStorage.getItem('UUID') !== data.userId) {
+                            localStorage.setItem('UUID', data.userId);
+                            localStorage.setItem('username', data.username);
+                            localStorage.removeItem('AIChatUsername');
+                        }
+                    } catch (_) { /* storage blocked: the client will ask for a name instead */ }
+                    location.replace('/');
+                    return;
+                }
+                show(response.status === 429
+                    ? 'Too many failed attempts. Please wait a few minutes.'
+                    : (data.error || 'Login failed.'), 'error');
+            } catch (_) {
+                show('Could not reach the server.', 'error');
+            } finally {
+                submit.disabled = false;
+            }
+        });
+    </script>
+</body>
+
+</html>
