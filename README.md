@@ -67,6 +67,60 @@ This must be done AFTER completing all installation steps above.
 5. Share the generated cloudflared URL with the guest users.
 6. User will be able to directly and securely connect to your PC by opening the URL in their browser.
 
+### Guest login (username + password)
+
+Guests must log in before they can open the Guest server (port `8182`). The Host server (port `8181`) has no login: keep it for the machine running STMP and do not expose it to the internet.
+
+**Create the accounts** (from the STMP folder; the server can keep running):
+
+```
+node manage-users.js add <username>        # asks for a password
+node manage-users.js passwd <username>     # change a password (logs the user out everywhere)
+node manage-users.js list
+node manage-users.js disable <username>    # also: enable
+node manage-users.js remove <username>
+```
+
+- Usernames are 3-12 characters (`A-Z a-z 0-9 _ -`, at least 3 letters). Passwords are at least 10 characters.
+- To keep an existing guest's history and role, link the login to their current user id with `add <username> --uuid <id>` (the id is in the `users` table of `stmp.db`).
+- With no account, nobody can join as a Guest. The server prints a reminder at startup.
+- A logged-in guest is identified by their account, not by what their browser claims. Visit `/login.html?logout` to log out.
+- Sessions last 14 days (`STMP_SESSION_DAYS`). After 5 failed attempts for one account from one IP, or 20 from one IP, logins are blocked for up to 15 minutes.
+
+**Reverse proxy (Caddy, Nginx) instead of a tunnel:** the Guest server speaks plain HTTP/WebSocket, so put HTTPS in front of it. With Caddy:
+
+```
+example.com {
+    reverse_proxy localhost:8182
+}
+```
+
+With Nginx, forward the WebSocket upgrade and the original `Host`:
+
+```
+location / {
+    proxy_pass http://127.0.0.1:8182;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+Passwords travel in clear text over plain HTTP, so only open the Guest port to the internet through HTTPS.
+
+**Settings** (environment variables, all optional):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `STMP_REQUIRE_LOGIN` | `true` | `false` turns the login off (anyone reaching port 8182 can join) |
+| `STMP_SESSION_DAYS` | `14` | How long a login lasts |
+| `STMP_TRUSTED_PROXIES` | `127.0.0.1,::1` | Proxies whose `X-Forwarded-For` / `X-Forwarded-Proto` are believed. Keep this to your own reverse proxy: a header sent by anyone else is ignored. |
+| `STMP_ALLOWED_ORIGINS` | none | Extra sites allowed to log in or open the WebSocket. Only needed if your proxy changes the `Host` header (the server logs a hint when it rejects an Origin). |
+| `STMP_COOKIE_SECURE` | `auto` | `auto` sets the Secure cookie flag when the request came over HTTPS |
+
 ## Play
 
 ### Chatting
